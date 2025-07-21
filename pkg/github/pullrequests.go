@@ -1818,3 +1818,122 @@ func newGQLIntPtr(i *int32) *githubv4.Int {
 	gi := githubv4.Int(*i)
 	return &gi
 }
+
+// GetPullRequestThreads creates a tool to get review threads (discussions) for a pull request.
+func GetPullRequestThreads(getGQLClient GetGQLClientFn, t translations.TranslationHelperFunc) (mcp.Tool, server.ToolHandlerFunc) {
+	return mcp.NewTool("get_pull_request_threads",
+			mcp.WithDescription(t("TOOL_GET_PULL_REQUEST_THREADS_DESCRIPTION", "Get review threads (discussions) for a specific pull request, including all comments in each thread with their IDs.")),
+			mcp.WithToolAnnotation(mcp.ToolAnnotation{
+				Title:        t("TOOL_GET_PULL_REQUEST_THREADS_USER_TITLE", "Get pull request review threads"),
+				ReadOnlyHint: ToBoolPtr(true),
+			}),
+			mcp.WithString("owner",
+				mcp.Required(),
+				mcp.Description("Repository owner"),
+			),
+			mcp.WithString("repo",
+				mcp.Required(),
+				mcp.Description("Repository name"),
+			),
+			mcp.WithNumber("pullNumber",
+				mcp.Required(),
+				mcp.Description("Pull request number"),
+			),
+			mcp.WithBoolean("unresolvedOnly",
+				mcp.Description("If true, only return unresolved threads"),
+			),
+		),
+		func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			var params struct {
+				Owner          string
+				Repo           string
+				PullNumber     int32
+				UnresolvedOnly *bool
+			}
+			if err := mapstructure.Decode(request.Params.Arguments, &params); err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+
+			client, err := getGQLClient(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get GitHub GQL client: %w", err)
+			}
+
+			var getPullRequestThreadsQuery struct {
+				Repository struct {
+					PullRequest struct {
+						ReviewThreads struct {
+							Nodes []struct {
+								ID                githubv4.ID                                 `json:"id"`
+								IsResolved        githubv4.Boolean                            `json:"isResolved"`
+								IsOutdated        githubv4.Boolean                            `json:"isOutdated"`
+								Line              *githubv4.Int                               `json:"line"`
+								OriginalLine      *githubv4.Int                               `json:"originalLine"`
+								StartLine         *githubv4.Int                               `json:"startLine"`
+								OriginalStartLine *githubv4.Int                               `json:"originalStartLine"`
+								DiffSide          githubv4.DiffSide                           `json:"diffSide"`
+								StartDiffSide     *githubv4.DiffSide                          `json:"startDiffSide"`
+								Path              githubv4.String                             `json:"path"`
+								SubjectType       githubv4.PullRequestReviewThreadSubjectType `json:"subjectType"`
+								Comments          struct {
+									Nodes []struct {
+										ID              githubv4.ID       `json:"id"`
+										Body            githubv4.String   `json:"body"`
+										CreatedAt       githubv4.DateTime `json:"createdAt"`
+										UpdatedAt       githubv4.DateTime `json:"updatedAt"`
+										MinimizedReason *githubv4.String  `json:"minimizedReason"`
+										IsMinimized     githubv4.Boolean  `json:"isMinimized"`
+										Author          struct {
+											Login githubv4.String `json:"login"`
+										} `json:"author"`
+										AuthorAssociation githubv4.CommentAuthorAssociation `json:"authorAssociation"`
+										URL               githubv4.URI                      `json:"url"`
+										DatabaseID        *int64                            `json:"databaseId"`
+									} `json:"comments"`
+								} `graphql:"comments(first: 100)" json:"comments"`
+							} `json:"reviewThreads"`
+						} `graphql:"reviewThreads(first: 100)" json:"reviewThreads"`
+					} `graphql:"pullRequest(number: $prNum)" json:"pullRequest"`
+				} `graphql:"repository(owner: $owner, name: $repo)" json:"repository"`
+			}
+
+			vars := map[string]any{
+				"owner": githubv4.String(params.Owner),
+				"repo":  githubv4.String(params.Repo),
+				"prNum": githubv4.Int(params.PullNumber),
+			}
+
+			if err := client.Query(ctx, &getPullRequestThreadsQuery, vars); err != nil {
+				return ghErrors.NewGitHubGraphQLErrorResponse(ctx,
+					"failed to get pull request threads",
+					err,
+				), nil
+			}
+
+			threads := getPullRequestThreadsQuery.Repository.PullRequest.ReviewThreads.Nodes
+
+			// Filter for unresolved threads if requested
+			if params.UnresolvedOnly != nil && *params.UnresolvedOnly {
+				var unresolvedThreads []interface{}
+
+				for _, thread := range threads {
+					if !thread.IsResolved {
+						unresolvedThreads = append(unresolvedThreads, thread)
+					}
+				}
+
+				r, err := json.Marshal(unresolvedThreads)
+				if err != nil {
+					return nil, fmt.Errorf("failed to marshal response: %w", err)
+				}
+				return mcp.NewToolResultText(string(r)), nil
+			}
+
+			r, err := json.Marshal(threads)
+			if err != nil {
+				return nil, fmt.Errorf("failed to marshal response: %w", err)
+			}
+
+			return mcp.NewToolResultText(string(r)), nil
+		}
+}

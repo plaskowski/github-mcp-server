@@ -2755,3 +2755,371 @@ func TestAddReplyToPullRequestComment(t *testing.T) {
 		})
 	}
 }
+
+func TestGetPullRequestThreads(t *testing.T) {
+	t.Parallel()
+
+	// Verify tool definition once
+	mockClient := githubv4.NewClient(nil)
+	tool, _ := GetPullRequestThreads(stubGetGQLClientFn(mockClient), translations.NullTranslationHelper)
+	require.NoError(t, toolsnaps.Test(tool.Name, tool))
+
+	assert.Equal(t, "get_pull_request_threads", tool.Name)
+	assert.NotEmpty(t, tool.Description)
+	assert.Contains(t, tool.InputSchema.Properties, "owner")
+	assert.Contains(t, tool.InputSchema.Properties, "repo")
+	assert.Contains(t, tool.InputSchema.Properties, "pullNumber")
+	assert.Contains(t, tool.InputSchema.Properties, "unresolvedOnly")
+	assert.ElementsMatch(t, tool.InputSchema.Required, []string{"owner", "repo", "pullNumber"})
+
+	tests := []struct {
+		name               string
+		mockedClient       *http.Client
+		requestArgs        map[string]any
+		expectToolError    bool
+		expectedToolErrMsg string
+		expectedThreads    int
+	}{
+		{
+			name: "successful threads retrieval",
+			mockedClient: githubv4mock.NewMockedHTTPClient(
+				githubv4mock.NewQueryMatcher(
+					struct {
+						Repository struct {
+							PullRequest struct {
+								ReviewThreads struct {
+									Nodes []struct {
+										ID                githubv4.ID                                 `json:"id"`
+										IsResolved        githubv4.Boolean                            `json:"isResolved"`
+										IsOutdated        githubv4.Boolean                            `json:"isOutdated"`
+										Line              *githubv4.Int                               `json:"line"`
+										OriginalLine      *githubv4.Int                               `json:"originalLine"`
+										StartLine         *githubv4.Int                               `json:"startLine"`
+										OriginalStartLine *githubv4.Int                               `json:"originalStartLine"`
+										DiffSide          githubv4.DiffSide                           `json:"diffSide"`
+										StartDiffSide     *githubv4.DiffSide                          `json:"startDiffSide"`
+										Path              githubv4.String                             `json:"path"`
+										SubjectType       githubv4.PullRequestReviewThreadSubjectType `json:"subjectType"`
+										Comments          struct {
+											Nodes []struct {
+												ID              githubv4.ID       `json:"id"`
+												Body            githubv4.String   `json:"body"`
+												CreatedAt       githubv4.DateTime `json:"createdAt"`
+												UpdatedAt       githubv4.DateTime `json:"updatedAt"`
+												MinimizedReason *githubv4.String  `json:"minimizedReason"`
+												IsMinimized     githubv4.Boolean  `json:"isMinimized"`
+												Author          struct {
+													Login githubv4.String `json:"login"`
+												} `json:"author"`
+												AuthorAssociation githubv4.CommentAuthorAssociation `json:"authorAssociation"`
+												URL               githubv4.URI                      `json:"url"`
+												DatabaseID        *int64                            `json:"databaseId"`
+											} `json:"comments"`
+										} `graphql:"comments(first: 100)" json:"comments"`
+									} `json:"reviewThreads"`
+								} `graphql:"reviewThreads(first: 100)" json:"reviewThreads"`
+							} `graphql:"pullRequest(number: $prNum)" json:"pullRequest"`
+						} `graphql:"repository(owner: $owner, name: $repo)" json:"repository"`
+					}{},
+					map[string]any{
+						"owner": githubv4.String("owner"),
+						"repo":  githubv4.String("repo"),
+						"prNum": githubv4.Int(42),
+					},
+					githubv4mock.DataResponse(
+						map[string]any{
+							"repository": map[string]any{
+								"pullRequest": map[string]any{
+									"reviewThreads": map[string]any{
+										"nodes": []map[string]any{
+											{
+												"id":          "RT_kwDODKw3uc6WYN1T",
+												"isResolved":  true,
+												"isOutdated":  false,
+												"line":        10,
+												"path":        "src/main.go",
+												"subjectType": "LINE",
+												"diffSide":    "RIGHT",
+												"comments": map[string]any{
+													"nodes": []map[string]any{
+														{
+															"id":          "RC_kwDODKw3uc6WYN1T",
+															"body":        "This looks good!",
+															"createdAt":   "2023-01-01T00:00:00Z",
+															"updatedAt":   "2023-01-01T00:00:00Z",
+															"isMinimized": false,
+															"author": map[string]any{
+																"login": "reviewer1",
+															},
+															"authorAssociation": "COLLABORATOR",
+															"url":               "https://github.com/owner/repo/pull/42#discussion_r123",
+															"databaseId":        123,
+														},
+													},
+												},
+											},
+											{
+												"id":          "RT_kwDODKw3uc6WYN2T",
+												"isResolved":  false,
+												"isOutdated":  false,
+												"line":        20,
+												"path":        "src/utils.go",
+												"subjectType": "LINE",
+												"diffSide":    "RIGHT",
+												"comments": map[string]any{
+													"nodes": []map[string]any{
+														{
+															"id":          "RC_kwDODKw3uc6WYN2T",
+															"body":        "This needs improvement",
+															"createdAt":   "2023-01-01T01:00:00Z",
+															"updatedAt":   "2023-01-01T01:00:00Z",
+															"isMinimized": false,
+															"author": map[string]any{
+																"login": "reviewer2",
+															},
+															"authorAssociation": "MEMBER",
+															"url":               "https://github.com/owner/repo/pull/42#discussion_r124",
+															"databaseId":        124,
+														},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					),
+				),
+			),
+			requestArgs: map[string]any{
+				"owner":      "owner",
+				"repo":       "repo",
+				"pullNumber": float64(42),
+			},
+			expectToolError: false,
+			expectedThreads: 2,
+		},
+		{
+			name: "successful threads retrieval with unresolved filter",
+			mockedClient: githubv4mock.NewMockedHTTPClient(
+				githubv4mock.NewQueryMatcher(
+					struct {
+						Repository struct {
+							PullRequest struct {
+								ReviewThreads struct {
+									Nodes []struct {
+										ID                githubv4.ID                                 `json:"id"`
+										IsResolved        githubv4.Boolean                            `json:"isResolved"`
+										IsOutdated        githubv4.Boolean                            `json:"isOutdated"`
+										Line              *githubv4.Int                               `json:"line"`
+										OriginalLine      *githubv4.Int                               `json:"originalLine"`
+										StartLine         *githubv4.Int                               `json:"startLine"`
+										OriginalStartLine *githubv4.Int                               `json:"originalStartLine"`
+										DiffSide          githubv4.DiffSide                           `json:"diffSide"`
+										StartDiffSide     *githubv4.DiffSide                          `json:"startDiffSide"`
+										Path              githubv4.String                             `json:"path"`
+										SubjectType       githubv4.PullRequestReviewThreadSubjectType `json:"subjectType"`
+										Comments          struct {
+											Nodes []struct {
+												ID              githubv4.ID       `json:"id"`
+												Body            githubv4.String   `json:"body"`
+												CreatedAt       githubv4.DateTime `json:"createdAt"`
+												UpdatedAt       githubv4.DateTime `json:"updatedAt"`
+												MinimizedReason *githubv4.String  `json:"minimizedReason"`
+												IsMinimized     githubv4.Boolean  `json:"isMinimized"`
+												Author          struct {
+													Login githubv4.String `json:"login"`
+												} `json:"author"`
+												AuthorAssociation githubv4.CommentAuthorAssociation `json:"authorAssociation"`
+												URL               githubv4.URI                      `json:"url"`
+												DatabaseID        *int64                            `json:"databaseId"`
+											} `json:"comments"`
+										} `graphql:"comments(first: 100)" json:"comments"`
+									} `json:"reviewThreads"`
+								} `graphql:"reviewThreads(first: 100)" json:"reviewThreads"`
+							} `graphql:"pullRequest(number: $prNum)" json:"pullRequest"`
+						} `graphql:"repository(owner: $owner, name: $repo)" json:"repository"`
+					}{},
+					map[string]any{
+						"owner": githubv4.String("owner"),
+						"repo":  githubv4.String("repo"),
+						"prNum": githubv4.Int(42),
+					},
+					githubv4mock.DataResponse(
+						map[string]any{
+							"repository": map[string]any{
+								"pullRequest": map[string]any{
+									"reviewThreads": map[string]any{
+										"nodes": []map[string]any{
+											{
+												"id":          "RT_kwDODKw3uc6WYN1T",
+												"isResolved":  true,
+												"isOutdated":  false,
+												"line":        10,
+												"path":        "src/main.go",
+												"subjectType": "LINE",
+												"diffSide":    "RIGHT",
+												"comments": map[string]any{
+													"nodes": []map[string]any{
+														{
+															"id":          "RC_kwDODKw3uc6WYN1T",
+															"body":        "This looks good!",
+															"createdAt":   "2023-01-01T00:00:00Z",
+															"updatedAt":   "2023-01-01T00:00:00Z",
+															"isMinimized": false,
+															"author": map[string]any{
+																"login": "reviewer1",
+															},
+															"authorAssociation": "COLLABORATOR",
+															"url":               "https://github.com/owner/repo/pull/42#discussion_r123",
+															"databaseId":        123,
+														},
+													},
+												},
+											},
+											{
+												"id":          "RT_kwDODKw3uc6WYN2T",
+												"isResolved":  false,
+												"isOutdated":  false,
+												"line":        20,
+												"path":        "src/utils.go",
+												"subjectType": "LINE",
+												"diffSide":    "RIGHT",
+												"comments": map[string]any{
+													"nodes": []map[string]any{
+														{
+															"id":          "RC_kwDODKw3uc6WYN2T",
+															"body":        "This needs improvement",
+															"createdAt":   "2023-01-01T01:00:00Z",
+															"updatedAt":   "2023-01-01T01:00:00Z",
+															"isMinimized": false,
+															"author": map[string]any{
+																"login": "reviewer2",
+															},
+															"authorAssociation": "MEMBER",
+															"url":               "https://github.com/owner/repo/pull/42#discussion_r124",
+															"databaseId":        124,
+														},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					),
+				),
+			),
+			requestArgs: map[string]any{
+				"owner":          "owner",
+				"repo":           "repo",
+				"pullNumber":     float64(42),
+				"unresolvedOnly": true,
+			},
+			expectToolError: false,
+			expectedThreads: 1, // Only unresolved threads
+		},
+		{
+			name: "failure to get pull request threads",
+			mockedClient: githubv4mock.NewMockedHTTPClient(
+				githubv4mock.NewQueryMatcher(
+					struct {
+						Repository struct {
+							PullRequest struct {
+								ReviewThreads struct {
+									Nodes []struct {
+										ID                githubv4.ID                                 `json:"id"`
+										IsResolved        githubv4.Boolean                            `json:"isResolved"`
+										IsOutdated        githubv4.Boolean                            `json:"isOutdated"`
+										Line              *githubv4.Int                               `json:"line"`
+										OriginalLine      *githubv4.Int                               `json:"originalLine"`
+										StartLine         *githubv4.Int                               `json:"startLine"`
+										OriginalStartLine *githubv4.Int                               `json:"originalStartLine"`
+										DiffSide          githubv4.DiffSide                           `json:"diffSide"`
+										StartDiffSide     *githubv4.DiffSide                          `json:"startDiffSide"`
+										Path              githubv4.String                             `json:"path"`
+										SubjectType       githubv4.PullRequestReviewThreadSubjectType `json:"subjectType"`
+										Comments          struct {
+											Nodes []struct {
+												ID              githubv4.ID       `json:"id"`
+												Body            githubv4.String   `json:"body"`
+												CreatedAt       githubv4.DateTime `json:"createdAt"`
+												UpdatedAt       githubv4.DateTime `json:"updatedAt"`
+												MinimizedReason *githubv4.String  `json:"minimizedReason"`
+												IsMinimized     githubv4.Boolean  `json:"isMinimized"`
+												Author          struct {
+													Login githubv4.String `json:"login"`
+												} `json:"author"`
+												AuthorAssociation githubv4.CommentAuthorAssociation `json:"authorAssociation"`
+												URL               githubv4.URI                      `json:"url"`
+												DatabaseID        *int64                            `json:"databaseId"`
+											} `json:"comments"`
+										} `graphql:"comments(first: 100)" json:"comments"`
+									} `json:"reviewThreads"`
+								} `graphql:"reviewThreads(first: 100)" json:"reviewThreads"`
+							} `graphql:"pullRequest(number: $prNum)" json:"pullRequest"`
+						} `graphql:"repository(owner: $owner, name: $repo)" json:"repository"`
+					}{},
+					map[string]any{
+						"owner": githubv4.String("owner"),
+						"repo":  githubv4.String("repo"),
+						"prNum": githubv4.Int(42),
+					},
+					githubv4mock.ErrorResponse("expected test failure"),
+				),
+			),
+			requestArgs: map[string]any{
+				"owner":      "owner",
+				"repo":       "repo",
+				"pullNumber": float64(42),
+			},
+			expectToolError:    true,
+			expectedToolErrMsg: "expected test failure",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Setup client with mock
+			client := githubv4.NewClient(tc.mockedClient)
+			_, handler := GetPullRequestThreads(stubGetGQLClientFn(client), translations.NullTranslationHelper)
+
+			// Create call request
+			request := createMCPRequest(tc.requestArgs)
+
+			// Call handler
+			result, err := handler(context.Background(), request)
+			require.NoError(t, err)
+
+			textContent := getTextResult(t, result)
+
+			if tc.expectToolError {
+				require.True(t, result.IsError)
+				assert.Contains(t, textContent.Text, tc.expectedToolErrMsg)
+				return
+			}
+
+			// Parse the result and verify it's not an error
+			require.False(t, result.IsError)
+
+			// Parse the JSON response to check thread count
+			var threads []interface{}
+			err = json.Unmarshal([]byte(textContent.Text), &threads)
+			require.NoError(t, err)
+			assert.Len(t, threads, tc.expectedThreads)
+
+			// If we have threads, verify structure
+			if len(threads) > 0 {
+				threadMap := threads[0].(map[string]interface{})
+				assert.Contains(t, threadMap, "id")
+				assert.Contains(t, threadMap, "isResolved")
+				assert.Contains(t, threadMap, "path")
+				assert.Contains(t, threadMap, "comments")
+			}
+		})
+	}
+}

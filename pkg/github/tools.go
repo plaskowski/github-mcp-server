@@ -78,6 +78,7 @@ func DefaultToolsetGroup(readOnly bool, getClient GetClientFn, getGQLClient GetG
 			toolsets.NewServerTool(GetPullRequestComments(getClient, t)),
 			toolsets.NewServerTool(GetPullRequestReviews(getClient, t)),
 			toolsets.NewServerTool(GetPullRequestDiff(getClient, t)),
+			toolsets.NewServerTool(GetPullRequestThreads(getGQLClient, t)),
 		).
 		AddWriteTools(
 			toolsets.NewServerTool(MergePullRequest(getClient, t)),

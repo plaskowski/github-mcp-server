@@ -1888,7 +1888,7 @@ func GetPullRequestThreads(getGQLClient GetGQLClientFn, t translations.Translati
 										} `json:"author"`
 										AuthorAssociation githubv4.CommentAuthorAssociation `json:"authorAssociation"`
 										URL               githubv4.URI                      `json:"url"`
-										DatabaseID        *githubv4.Int                     `json:"databaseId"`
+										DatabaseID        *int64                            `json:"databaseId"`
 									} `json:"comments"`
 								} `graphql:"comments(first: 100)" json:"comments"`
 							} `json:"reviewThreads"`
